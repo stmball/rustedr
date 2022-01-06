@@ -2,17 +2,17 @@ use std::error::Error;
 use std::io;
 use std::fs;
 use std::fmt;
+use std::num::ParseFloatError;
+use std::num::ParseIntError;
+
+use regex::Regex;
 
 pub fn run(filename: &String) -> Result<(), Box<dyn Error>> {
 
     let contents = read_edr(&filename)?;
-    if contents.len() < 2048 {
-        Err(Box::new(ParseError::FileTooShort))
-    } else {
-        let header : &[u8] = &contents[..2048];
-        let header_meta = parse_header(header);
-        Ok(())
-    }
+    let parsed_data = parse_data(contents);
+    Ok(())
+    
 }
 
 fn read_edr(filename: &String) -> Result<Vec<u8>, ReadError> {
@@ -26,14 +26,66 @@ fn read_edr(filename: &String) -> Result<Vec<u8>, ReadError> {
     }
 }
 
-fn parse_header(header: &[u8]) -> EDRMetadata {
-    let ascii_header: String = header.to_vec().iter().map(|&x| x as char).collect();
-    println!("{}", ascii_header);
-    EDRMetadata { tane : 1}
+fn parse_data(data: Vec<u8>) -> Result<(), ParseError> {
+    if data.len() >= 2048 {
+        // Read header
+        let header = parse_header(&data[..2048]);
+        Ok(())
+    } else {
+        Err(ParseError::FileTooShort)
+    }
 }
 
+fn parse_header(header: &[u8]) -> Result<EDRMetadata, ParseError> {
+    let ascii_header: String = header.to_vec().iter().map(|&x| x as char).collect();
+
+    let mut data = EDRMetadata {
+        AD: 0,
+        ADCMAX: 0,
+        DT: 0.0,
+        YAGn: Vec::new(),
+        YCFn: Vec::new(),
+        YZn: Vec::new()
+        
+    };
+
+    for line in ascii_header.lines() {
+        if line.starts_with("AD") {
+            data.AD = get_number(&line)?.parse::<u8>()?;
+        } else if line.starts_with("ADCMAX") {
+            data.ADCMAX = get_number(&line)?.parse::<u8>()?;
+        } else if line.starts_with("DT") {
+            data.DT = get_number(&line)?.parse::<f32>()?;
+        } else if line.starts_with("YAG") {
+            data.YAGn.push(get_number(&line)?.parse::<u8>()?);
+        } else if line.starts_with("YCF") {
+            data.YCFn.push(get_number(&line)?.parse::<f32>()?);
+        } else if line.starts_with("YZ") {
+            data.YZn.push(get_number(&line)?.parse::<u8>()?);
+        } else {
+            continue;
+        }
+    }
+    Ok(data)
+}
+
+fn get_number(line: &str) -> Result<&str, ParseError> {
+    let stringy = line.split('=').nth_back(0);
+    match stringy {
+        Some(a) => Ok(a),
+        _ => Err(ParseError::Header)
+    }
+}
+
+
+#[derive(Debug)]
 struct EDRMetadata {
-    tane: i32
+    AD: u8,
+    ADCMAX: u8,
+    DT: f32,
+    YAGn: Vec<u8>,
+    YCFn: Vec<f32>,
+    YZn: Vec<u8>
 }
 
 #[derive(Debug, PartialEq)]
@@ -46,6 +98,8 @@ enum ReadError {
 #[derive(Debug, PartialEq)]
 enum ParseError {
     FileTooShort,
+    Header,
+    FieldError,
 }
 
 impl From<io::Error> for ReadError {
@@ -53,6 +107,18 @@ impl From<io::Error> for ReadError {
         ReadError::FileReadError(err.kind())
     }
 }
+
+impl From<ParseIntError> for ParseError {
+    fn from(err: ParseIntError) -> ParseError {
+        ParseError::FieldError
+    }
+}
+
+impl From<ParseFloatError> for ParseError{
+    fn from(err: ParseFloatError) -> ParseError {
+        ParseError::FieldError
+    }
+} 
 
 impl Error for ReadError {}
 
@@ -72,6 +138,8 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::FileTooShort => write!(f, "file contents too short."),
+            ParseError::Header => write!(f, "something went wrong parsing the header."),
+            &ParseError::FieldError => write!(f, "one of the fields in the header couldn't be parsed.")
         }
     }
 }
@@ -103,7 +171,9 @@ mod tests {
 
     #[test]
     fn header_too_short () {
-
+        let actual_error = parse_data(vec![1,2,3,4]);
+        assert!(actual_error.is_err());
+        assert_eq!(actual_error.unwrap_err(), ParseError::FileTooShort)
     }
 }
 

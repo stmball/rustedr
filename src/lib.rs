@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::error::Error;
 use std::io;
 use std::fs;
@@ -5,13 +6,14 @@ use std::fmt;
 use std::num::ParseFloatError;
 use std::num::ParseIntError;
 
-use regex::Regex;
+pub fn run(filename: &String) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
 
-pub fn run(filename: &String) -> Result<(), Box<dyn Error>> {
-
+    // Read the file
     let contents = read_edr(&filename)?;
-    let parsed_data = parse_data(contents);
-    Ok(())
+    // Parse the file's header and contents
+    let parsed_data = parse_data(contents)?;
+
+    Ok(parsed_data)
     
 }
 
@@ -26,11 +28,18 @@ fn read_edr(filename: &String) -> Result<Vec<u8>, ReadError> {
     }
 }
 
-fn parse_data(data: Vec<u8>) -> Result<(), ParseError> {
-    if data.len() >= 2048 {
+fn parse_data(data: Vec<u8>) -> Result<Vec<Vec<f32>>, ParseError> {
+    if data.len() > 2048 {
         // Read header
-        let header = parse_header(&data[..2048]);
-        Ok(())
+        let header = parse_header(&data[..2048])?;
+
+        // Read contents
+        let contents = parse_contents(&data[2049..], header)?;
+
+        Ok(contents)
+
+    } else if data.len() == 2048 {
+        Err(ParseError::FileOnlyHeader)
     } else {
         Err(ParseError::FileTooShort)
     }
@@ -39,7 +48,7 @@ fn parse_data(data: Vec<u8>) -> Result<(), ParseError> {
 fn parse_header(header: &[u8]) -> Result<EDRMetadata, ParseError> {
     let ascii_header: String = header.to_vec().iter().map(|&x| x as char).collect();
 
-    let mut data = EDRMetadata {
+    let mut metadata = EDRMetadata {
         AD: 0,
         ADCMAX: 0,
         DT: 0.0,
@@ -51,41 +60,65 @@ fn parse_header(header: &[u8]) -> Result<EDRMetadata, ParseError> {
 
     for line in ascii_header.lines() {
         if line.starts_with("AD") {
-            data.AD = get_number(&line)?.parse::<u8>()?;
+            metadata.AD = get_number(&line)?.parse::<i32>()?;
         } else if line.starts_with("ADCMAX") {
-            data.ADCMAX = get_number(&line)?.parse::<u8>()?;
+            metadata.ADCMAX = get_number(&line)?.parse::<i32>()?;
         } else if line.starts_with("DT") {
-            data.DT = get_number(&line)?.parse::<f32>()?;
+            metadata.DT = get_number(&line)?.parse::<f32>()?;
         } else if line.starts_with("YAG") {
-            data.YAGn.push(get_number(&line)?.parse::<u8>()?);
+            metadata.YAGn.push(get_number(&line)?.parse::<i32>()?);
         } else if line.starts_with("YCF") {
-            data.YCFn.push(get_number(&line)?.parse::<f32>()?);
+            metadata.YCFn.push(get_number(&line)?.parse::<f32>()?);
         } else if line.starts_with("YZ") {
-            data.YZn.push(get_number(&line)?.parse::<u8>()?);
+            metadata.YZn.push(get_number(&line)?.parse::<i32>()?);
         } else {
             continue;
         }
     }
+    Ok(metadata)
+}
+
+fn parse_contents(data: &[u8], metadata: EDRMetadata) -> Result<Vec<Vec<f32>>, ParseError> {
+    
+    let no_channels = metadata.YZn.len();
+    
+    println!("{}", no_channels);
+    let contents = data.chunks_exact(2).map(|x| i16::from_le_bytes(x.try_into().unwrap())).collect::<Vec<i16>>();
+    
+    let data = (0..no_channels)
+                .map(|x| contents
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| i % no_channels == x)
+                        .map(|(_, j)| scale_val(*j as f32, metadata.YZn[x], metadata.AD, metadata.YCFn[x], metadata.YAGn[x], metadata.ADCMAX))
+                        .collect::<Vec<f32>>())
+                .collect::<Vec<Vec<f32>>>();
+
     Ok(data)
+
+}
+
+fn scale_val(value: f32, yz: i32, ad: i32, ycf: f32, yag: i32, adcmax: i32) -> f32 {
+    return ((value - yz as f32) * ad as f32) / (ycf * yag as f32 * (adcmax as f32 + 1.0)) 
 }
 
 fn get_number(line: &str) -> Result<&str, ParseError> {
     let stringy = line.split('=').nth_back(0);
     match stringy {
         Some(a) => Ok(a),
-        _ => Err(ParseError::Header)
+        _ => Err(ParseError::HeaderTagNotFound)
     }
 }
 
 
 #[derive(Debug)]
 struct EDRMetadata {
-    AD: u8,
-    ADCMAX: u8,
+    AD: i32,
+    ADCMAX: i32,
     DT: f32,
-    YAGn: Vec<u8>,
+    YAGn: Vec<i32>,
     YCFn: Vec<f32>,
-    YZn: Vec<u8>
+    YZn: Vec<i32>
 }
 
 #[derive(Debug, PartialEq)]
@@ -98,7 +131,8 @@ enum ReadError {
 #[derive(Debug, PartialEq)]
 enum ParseError {
     FileTooShort,
-    Header,
+    FileOnlyHeader,
+    HeaderTagNotFound,
     FieldError,
 }
 
@@ -109,13 +143,13 @@ impl From<io::Error> for ReadError {
 }
 
 impl From<ParseIntError> for ParseError {
-    fn from(err: ParseIntError) -> ParseError {
+    fn from(_: ParseIntError) -> ParseError {
         ParseError::FieldError
     }
 }
 
 impl From<ParseFloatError> for ParseError{
-    fn from(err: ParseFloatError) -> ParseError {
+    fn from(_: ParseFloatError) -> ParseError {
         ParseError::FieldError
     }
 } 
@@ -138,8 +172,9 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::FileTooShort => write!(f, "file contents too short."),
-            ParseError::Header => write!(f, "something went wrong parsing the header."),
-            &ParseError::FieldError => write!(f, "one of the fields in the header couldn't be parsed.")
+            ParseError::FileOnlyHeader => write!(f, "file contains only a header with no data."),
+            ParseError::HeaderTagNotFound => write!(f, "something went wrong parsing the header."),
+            ParseError::FieldError => write!(f, "one of the fields in the header couldn't be parsed.")
         }
     }
 }

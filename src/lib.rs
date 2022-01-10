@@ -1,19 +1,23 @@
 use std::convert::TryInto;
 use std::error::Error;
+use std::fmt::format;
 use std::io;
 use std::fs;
 use std::fmt;
+use std::io::Write;
 use std::num::ParseFloatError;
 use std::num::ParseIntError;
 
-pub fn run(filename: &String) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+pub fn run(filename: &String) -> Result<(), Box<dyn Error>> {
 
     // Read the file
     let contents = read_edr(&filename)?;
     // Parse the file's header and contents
     let parsed_data = parse_data(contents)?;
 
-    Ok(parsed_data)
+    let written_data = write_data(parsed_data, filename)?;
+
+    Ok(())
     
 }
 
@@ -43,6 +47,25 @@ fn parse_data(data: Vec<u8>) -> Result<Vec<Vec<f32>>, ParseError> {
     } else {
         Err(ParseError::FileTooShort)
     }
+}
+
+fn write_data(data: Vec<Vec<f32>>, filename: &String) -> Result<(), WriteError>{
+
+    let new_filename = format!("{}.csv", filename.strip_suffix(".EDR").unwrap());
+    let mut file = fs::File::create(new_filename)?;
+    for i in 0..data[0].len() {
+        write!(file, "{:?}\n", data.iter()
+                                .enumerate()
+                                .filter(|&(j, _)| j == i)
+                                .map(|(_, k)| k)
+                                .flatten()
+                                .map(|k| k.to_string())
+                                .collect::<Vec<String>>()
+                                .join(","))?
+
+
+    }
+    Ok(())
 }
 
 fn parse_header(header: &[u8]) -> Result<EDRMetadata, ParseError> {
@@ -136,9 +159,20 @@ enum ParseError {
     FieldError,
 }
 
+#[derive(Debug, PartialEq)]
+enum WriteError {
+    FileWriteError(io::ErrorKind),
+}
+
 impl From<io::Error> for ReadError {
     fn from(err: io::Error) -> ReadError {
         ReadError::FileReadError(err.kind())
+    }
+}
+
+impl From<io::Error> for WriteError {
+    fn from(err: io::Error) -> WriteError {
+        WriteError::FileWriteError(err.kind())
     }
 }
 
@@ -158,6 +192,8 @@ impl Error for ReadError {}
 
 impl Error for ParseError {}
 
+impl Error for WriteError {}
+
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -175,6 +211,14 @@ impl fmt::Display for ParseError {
             ParseError::FileOnlyHeader => write!(f, "file contains only a header with no data."),
             ParseError::HeaderTagNotFound => write!(f, "something went wrong parsing the header."),
             ParseError::FieldError => write!(f, "one of the fields in the header couldn't be parsed.")
+        }
+    }
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteError::FileWriteError(err) => write!(f, "error writing file, {:?}", err),
         }
     }
 }

@@ -38,7 +38,7 @@ fn parse_data(data: Vec<u8>) -> Result<Vec<Vec<f32>>, ParseError> {
         let header = parse_header(&data[..2048])?;
 
         // Read contents
-        let contents = parse_contents(&data[2049..], header)?;
+        let contents = parse_contents(&data[2048..], header)?;
 
         Ok(contents)
 
@@ -53,19 +53,20 @@ fn write_data(data: Vec<Vec<f32>>, filename: &String) -> Result<(), WriteError>{
 
     let new_filename = format!("{}.csv", filename.strip_suffix(".EDR").unwrap());
     let mut file = fs::File::create(new_filename)?;
-    for i in 0..data[0].len() {
-        write!(file, "{:?}\n", data.iter()
-                                .enumerate()
-                                .filter(|&(j, _)| j == i)
-                                .map(|(_, k)| k)
-                                .flatten()
+    for line in transpose(data) {
+        write!(file, "{}\n", line.iter()
                                 .map(|k| k.to_string())
                                 .collect::<Vec<String>>()
                                 .join(","))?
-
-
-    }
+        }
     Ok(())
+}
+
+fn transpose<T>(v: Vec<Vec<T>>) -> Vec<Vec<T>> where T: Clone {
+    assert!(!v.is_empty());
+    (0..v[0].len())
+        .map(|i| v.iter().map(|inner| inner[i].clone()).collect::<Vec<T>>())
+        .collect()
 }
 
 fn parse_header(header: &[u8]) -> Result<EDRMetadata, ParseError> {
@@ -115,8 +116,7 @@ fn parse_contents(data: &[u8], metadata: EDRMetadata) -> Result<Vec<Vec<f32>>, P
                         .filter(|(i, _)| i % no_channels == x)
                         .map(|(_, j)| scale_val(*j as f32, metadata.YZn[x], metadata.AD, metadata.YCFn[x], metadata.YAGn[x], metadata.ADCMAX))
                         .collect::<Vec<f32>>())
-                .collect::<Vec<Vec<f32>>>();
-
+                        .collect::<Vec<Vec<f32>>>();
     Ok(data)
 
 }
